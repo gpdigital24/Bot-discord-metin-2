@@ -70,5 +70,5 @@ async function start() {
   try { if (ticket) await api('login', {ticket}); await load(true); $('login').hidden = true; $('dashboard').hidden = false; if (state.channel_id === '0') page(true); }
   catch (e) { showLogin(e.message || 'Connexion impossible. Réessaie depuis Discord.'); }
 }
-start();
+if (location.pathname !== '/inviter') start();
 setInterval(() => { if (state && !working && !document.hidden && !$('editor').open && !$('confirm-dialog').open) load().catch(e => notice(e.message, true)); }, 30000);

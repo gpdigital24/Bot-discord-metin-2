@@ -19,7 +19,7 @@ class Dashboard:
         self.runner = None
         self.app = web.Application(client_max_size=8192, middlewares=[self.guard])
         self.app.add_routes([
-            web.get('/', self.index), web.get('/app.js', self.script), web.get('/style.css', self.style),
+            web.get('/', self.index), web.get('/inviter', self.index), web.get('/app.js', self.script), web.get('/style.css', self.style),
             web.get('/health', self.health), web.post('/api/login', self.login),
             web.get('/api/state', self.state), web.post('/api/logout', self.logout),
             web.post('/api/settings', self.settings), web.post('/api/accounts', self.accounts),
