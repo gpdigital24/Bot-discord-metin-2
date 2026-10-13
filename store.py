@@ -15,6 +15,15 @@ class Store:
             owner INTEGER, since INTEGER, message_id INTEGER UNIQUE
         )""")
         self.db.commit()
+        self.db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), guild_id INTEGER, channel_id INTEGER, role_id INTEGER)")
+        self.db.commit()
+
+    def settings(self):
+        return self.db.execute("SELECT * FROM settings WHERE id=1").fetchone()
+
+    def configure(self, guild_id, channel_id, role_id):
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES (1, ?, ?, ?)", (guild_id, channel_id, role_id))
 
     def all(self):
         return self.db.execute("SELECT * FROM accounts ORDER BY id").fetchall()

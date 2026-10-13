@@ -58,14 +58,22 @@ class DropBot(discord.Client):
         super().__init__(intents=discord.Intents.default(), allowed_mentions=discord.AllowedMentions.none())
         self.guild_id, self.channel_id, self.role_id = guild_id, channel_id, role_id
         self.store = store
+        saved = store.settings()
+        if saved:
+            self.guild_id, self.channel_id, self.role_id = saved['guild_id'], saved['channel_id'], saved['role_id']
         self.tree = app_commands.CommandTree(self)
         self.lock = asyncio.Lock()
         self.dirty = {row["id"] for row in store.all()}
 
     async def setup_hook(self):
         self.add_view(AccountView(self))
-        self.tree.add_command(AccountCommands(self), guild=discord.Object(id=self.guild_id))
-        await self.tree.sync(guild=discord.Object(id=self.guild_id))
+        self.tree.add_command(AccountCommands(self))
+        self.tree.add_command(configurer)
+        await self.tree.sync()
+        # Remove legacy guild-scoped commands, now published globally.
+        if self.guild_id:
+            self.tree.clear_commands(guild=discord.Object(id=self.guild_id))
+            await self.tree.sync(guild=discord.Object(id=self.guild_id))
         self.reconcile.start()
 
     async def on_ready(self):
@@ -114,6 +122,8 @@ class DropBot(discord.Client):
 
     @tasks.loop(minutes=2)
     async def reconcile(self):
+        if not self.channel_id:
+            return
         async with self.lock:
             for account_id in list(self.dirty):
                 await self.try_publish(account_id)
@@ -256,15 +266,108 @@ class AccountCommands(app_commands.Group):
         )
 
 
+class ConfigurationView(discord.ui.View):
+    def __init__(self, bot, user_id):
+        super().__init__(timeout=300)
+        self.bot, self.user_id = bot, user_id
+        self.channel_id, self.role_id = bot.channel_id, bot.role_id
+
+    async def interaction_check(self, interaction):
+        allowed = (
+            interaction.user.id == self.user_id
+            and interaction.guild_id is not None
+            and interaction.permissions.manage_guild
+            and self.bot.guild_id in (0, interaction.guild_id)
+        )
+        if not allowed:
+            await interaction.response.send_message("Ce panneau est réservé au responsable qui l'a ouvert sur le serveur du bot.", ephemeral=True)
+        return allowed
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.text], placeholder="Choisir le salon des comptes drop", min_values=1, max_values=1)
+    async def select_channel(self, interaction, select):
+        self.channel_id = select.values[0].id
+        await interaction.response.defer()
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Rôle à prévenir (facultatif)", min_values=0, max_values=1)
+    async def select_role(self, interaction, select):
+        self.role_id = select.values[0].id if select.values else 0
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Désactiver les notifications", style=discord.ButtonStyle.secondary)
+    async def no_notifications(self, interaction, button):
+        self.role_id = 0
+        await interaction.response.send_message("Notifications désactivées dans ce brouillon. Clique sur Enregistrer pour appliquer.", ephemeral=True)
+
+    @discord.ui.button(label="Enregistrer", style=discord.ButtonStyle.success)
+    async def save(self, interaction, button):
+        await interaction.response.defer()
+        async with self.bot.lock:
+            if self.bot.guild_id not in (0, interaction.guild_id):
+                await interaction.followup.send("Le bot est déjà configuré pour un autre serveur.", ephemeral=True)
+                return
+            channel = interaction.guild.get_channel(self.channel_id) if self.channel_id else None
+            if not isinstance(channel, discord.TextChannel):
+                await interaction.followup.send("Choisis un salon textuel.", ephemeral=True)
+                return
+            if not channel.permissions_for(interaction.user).view_channel:
+                await interaction.followup.send("Tu dois avoir accès au salon choisi.", ephemeral=True)
+                return
+            permissions = channel.permissions_for(interaction.guild.me)
+            if not all((permissions.view_channel, permissions.send_messages, permissions.embed_links, permissions.read_message_history)):
+                await interaction.followup.send("Dans ce salon, accorde au bot : Voir les salons, Envoyer des messages, Intégrer des liens et Voir les anciens messages.", ephemeral=True)
+                return
+            role = interaction.guild.get_role(self.role_id) if self.role_id else None
+            if self.role_id and (role is None or role.is_default() or not channel.permissions_for(role).view_channel):
+                await interaction.followup.send("Choisis un rôle existant ayant accès au salon, autre que @everyone.", ephemeral=True)
+                return
+            if role and not role.mentionable and not permissions.mention_everyone:
+                await interaction.followup.send("Rends le rôle mentionnable, ou autorise le bot à mentionner tous les rôles dans ce salon.", ephemeral=True)
+                return
+            if self.bot.channel_id and self.bot.channel_id != channel.id and self.bot.store.all():
+                await interaction.followup.send("Pour changer de salon, libère puis retire les comptes existants avec /compte retirer. Tu pourras ensuite les ajouter dans le nouveau salon.", ephemeral=True)
+                return
+            self.bot.store.configure(interaction.guild_id, channel.id, self.role_id)
+            self.bot.guild_id, self.bot.channel_id, self.bot.role_id = interaction.guild_id, channel.id, self.role_id
+            for item in self.children:
+                item.disabled = True
+            await interaction.edit_original_response(view=self)
+            self.stop()
+            await interaction.followup.send(
+                f"Configuration sauvegardée !\nSalon : {channel.mention}\nNotifications : {role.mention if role else 'désactivées'}\nAjoute tes comptes dans ce salon avec **/compte ajouter**.", ephemeral=True)
+
+    async def on_error(self, interaction, error, item):
+        log.error("Erreur de configuration", exc_info=(type(error), error, error.__traceback__))
+        text = "La configuration n'a pas pu être terminée. Relance /configurer pour vérifier les paramètres sauvegardés."
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+
+
+@app_commands.command(description="Ouvrir le panneau de configuration des comptes drop")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+async def configurer(interaction: discord.Interaction):
+    bot = interaction.client
+    if not interaction.permissions.manage_guild or bot.guild_id not in (0, interaction.guild_id):
+        await interaction.response.send_message("Commande réservée aux responsables du serveur du bot.", ephemeral=True)
+        return
+    current = f"Salon actuel : <#{bot.channel_id}>" if bot.channel_id else "Aucun salon configuré."
+    current += f"\nRôle actuel : <@&{bot.role_id}>" if bot.role_id else "\nNotifications désactivées."
+    await interaction.response.send_message(
+        f"**Configuration des comptes drop**\n{current}\n\nChoisis le salon et, si souhaité, le rôle à prévenir, puis clique sur **Enregistrer**. Ce panneau expire après 5 minutes.",
+        view=ConfigurationView(bot, interaction.user.id), ephemeral=True)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    required = ("DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_CHANNEL_ID")
+    required = ("DISCORD_TOKEN",)
     missing = [key for key in required if not os.getenv(key)]
     if missing:
         raise SystemExit("Variables manquantes : " + ", ".join(missing))
     try:
-        guild_id = int(os.environ["DISCORD_GUILD_ID"])
-        channel_id = int(os.environ["DISCORD_CHANNEL_ID"])
+        guild_id = int(os.getenv("DISCORD_GUILD_ID") or "0")
+        channel_id = int(os.getenv("DISCORD_CHANNEL_ID") or "0")
         role_id = int(os.getenv("DISCORD_NOTIFY_ROLE_ID") or "0")
     except ValueError:
         raise SystemExit("Les identifiants Discord doivent être des nombres.") from None

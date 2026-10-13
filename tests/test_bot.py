@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import discord
-from bot import AccountCommands, AccountView, DropBot, panel
+from bot import AccountCommands, AccountView, ConfigurationView, DropBot, panel
 from store import Store
 
 
@@ -57,6 +57,12 @@ class StoreTests(unittest.TestCase):
             self.store.add("drop 1")
         self.store.remove(self.account)
         self.assertFalse(self.store.take(self.account, 10))
+
+    def test_configuration_survives_restart(self):
+        self.store.configure(1, 2, 3)
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual(self.store.settings()['role_id'], 3)
 
 
 class InteractionTests(unittest.IsolatedAsyncioTestCase):
@@ -119,6 +125,34 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.publish(self.account)
         self.assertEqual(self.store.get(self.account)["message_id"], 456)
         self.assertNotIn(self.account, self.bot.dirty)
+
+    async def test_configuration_permission_checks(self):
+        view = ConfigurationView(self.bot, 10)
+        interaction = self.interaction(20, manager=True)
+        interaction.guild_id = 1
+        self.assertFalse(await view.interaction_check(interaction))
+        interaction.user.id = 10
+        self.assertTrue(await view.interaction_check(interaction))
+        interaction.permissions.manage_guild = False
+        self.assertFalse(await view.interaction_check(interaction))
+        view.stop()
+
+    async def test_configuration_saves_without_environment_ids(self):
+        self.bot.guild_id = self.bot.channel_id = 0
+        view = ConfigurationView(self.bot, 10)
+        view.channel_id = 2
+        from unittest.mock import MagicMock
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id, channel.mention = 2, '<#2>'
+        channel.permissions_for.return_value = discord.Permissions.all()
+        interaction = self.interaction(10, manager=True)
+        interaction.guild_id = 1
+        interaction.guild = SimpleNamespace(get_channel=lambda _: channel, me=object())
+        interaction.edit_original_response = AsyncMock()
+        await view.save.callback(interaction)
+        self.assertEqual(self.store.settings()['channel_id'], 2)
+        self.assertEqual(self.bot.guild_id, 1)
+        self.assertTrue(all(item.disabled for item in view.children))
 
 
 if __name__ == "__main__":

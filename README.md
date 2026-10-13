@@ -16,7 +16,7 @@ Un panneau par compte, avec prise et libération manuelles. Aucune connexion à 
 4. Permissions du bot : **Voir les salons**, **Envoyer des messages**, **Intégrer des liens**, **Voir les anciens messages**. Aucun droit administrateur ni intent privilégié nécessaire.
 5. Inviter le bot sur le serveur et lui donner ces permissions dans le salon texte `#compte-drop`.
 6. Pour les notifications, créer le rôle `Compte Drop`, l'attribuer aux membres concernés, autoriser ce rôle à voir le salon et rendre le rôle mentionnable. Autre possibilité : autoriser le bot à mentionner tous les rôles uniquement dans ce salon.
-7. Activer le **Mode développeur** dans les paramètres avancés Discord. Copier les identifiants du serveur, du salon et du rôle avec le clic droit.
+7. Le salon et le rôle seront choisis directement dans Discord avec **/configurer** : aucun identifiant à copier.
 
 ## 2. Déployer sur Railway
 
@@ -28,14 +28,19 @@ Un panneau par compte, avec prise et libération manuelles. Aucune connexion à 
 | Variable | Valeur |
 | --- | --- |
 | `DISCORD_TOKEN` | Token privé du bot |
-| `DISCORD_GUILD_ID` | ID du serveur |
-| `DISCORD_CHANNEL_ID` | ID du salon texte des comptes |
-| `DISCORD_NOTIFY_ROLE_ID` | ID du rôle à notifier ; facultatif, omettre pour désactiver |
 
 5. Garder **une seule réplique** et désactiver **Serverless / mise en veille**. Aucun domaine public, port HTTP ou healthcheck HTTP à configurer : le bot se connecte directement à Discord.
 6. Déployer puis vérifier le journal : `Bot connecté`. Le service reste actif tant que l'hébergement fonctionne et dispose de crédits.
 
-La base appartient à un seul serveur et salon configurés. Ne pas réutiliser son volume pour un autre serveur/salon sans migration. Activer les sauvegardes du volume dans Railway si souhaité.
+La base appartient à un seul serveur. Activer les sauvegardes du volume dans Railway si souhaité.
+
+## Panneau de configuration Discord
+
+Une fois le bot connecté, un responsable avec **Gérer le serveur** lance **/configurer** dans Discord. Un panneau privé permet de choisir le salon textuel et un rôle facultatif à notifier, puis d'enregistrer. Le bot vérifie ses permissions dans le salon et la possibilité de mentionner le rôle. Le serveur est détecté automatiquement et la configuration est sauvegardée sur le volume.
+
+Pour modifier le rôle ou désactiver les notifications, relancer la commande. Le panneau expire après cinq minutes. Pour changer de salon alors que des comptes existent, les libérer puis les retirer avant de configurer le nouveau salon. Les commandes globales peuvent mettre un peu de temps à apparaître dans Discord.
+
+Les anciennes variables `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID` et `DISCORD_NOTIFY_ROLE_ID` restent facultativement prises en charge pour compatibilité ; une configuration sauvegardée dans le panneau est prioritaire.
 
 ## 3. Ajouter les comptes dans Discord
 
@@ -61,8 +66,6 @@ Si Discord refuse une mise à jour, le statut reste sauvegardé et la publicatio
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 .\.venv\Scripts\python -m unittest discover -s tests -v
-$env:DISCORD_GUILD_ID = 'ID_SERVEUR'
-$env:DISCORD_CHANNEL_ID = 'ID_SALON'
 $secret = Read-Host 'Token Discord' -AsSecureString
 $env:DISCORD_TOKEN = [System.Net.NetworkCredential]::new('', $secret).Password
 .\.venv\Scripts\python bot.py
