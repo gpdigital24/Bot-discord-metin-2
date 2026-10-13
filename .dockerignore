@@ -3,3 +3,6 @@
 !requirements.txt
 !bot.py
 !store.py
+!dashboard.py
+!web/
+!web/**

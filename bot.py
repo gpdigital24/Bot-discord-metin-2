@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 from store import Store
+from dashboard import Dashboard
 
 log = logging.getLogger("drop")
 
@@ -64,17 +65,22 @@ class DropBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.lock = asyncio.Lock()
         self.dirty = {row["id"] for row in store.all()}
+        domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', '')
+        origin = os.getenv('DASHBOARD_URL') or (f'https://{domain}' if domain else 'http://localhost:8080')
+        self.dashboard = Dashboard(self, origin)
 
     async def setup_hook(self):
         self.add_view(AccountView(self))
         self.tree.add_command(AccountCommands(self))
         self.tree.add_command(configurer)
+        self.tree.add_command(web_panel)
         await self.tree.sync()
         # Remove legacy guild-scoped commands, now published globally.
         if self.guild_id:
             self.tree.clear_commands(guild=discord.Object(id=self.guild_id))
             await self.tree.sync(guild=discord.Object(id=self.guild_id))
         self.reconcile.start()
+        await self.dashboard.start(int(os.getenv('PORT', '8080')))
 
     async def on_ready(self):
         log.info("Bot connecté : %s", self.user)
@@ -155,22 +161,28 @@ class DropBot(discord.Client):
             if not published:
                 result += " Le statut est sauvegardé ; la mise à jour du panneau sera réessayée."
             await interaction.followup.send(result, ephemeral=True)
-            if not taking and self.role_id:
-                try:
-                    channel = await self.channel()
-                    role = channel.guild.get_role(self.role_id)
-                    if role is None or role.is_default() or not channel.permissions_for(role).view_channel:
-                        log.warning("Rôle de notification absent ou sans accès au salon")
-                        return
-                    await channel.send(
-                        f"{role.mention} — **{discord.utils.escape_markdown(account['name'])}** est disponible !",
-                        allowed_mentions=discord.AllowedMentions(roles=[role], users=False, everyone=False),
-                    )
-                except discord.HTTPException:
-                    log.exception("Statut sauvegardé, mais notification non envoyée")
+            if not taking:
+                await self.notify_available(account)
+
+    async def notify_available(self, account):
+        if not self.role_id:
+            return
+        try:
+            channel = await self.channel()
+            role = channel.guild.get_role(self.role_id)
+            if role is None or role.is_default() or not channel.permissions_for(role).view_channel:
+                log.warning('Rôle de notification absent ou sans accès au salon')
+                return
+            await channel.send(
+                f"{role.mention} — **{discord.utils.escape_markdown(account['name'])}** est disponible !",
+                allowed_mentions=discord.AllowedMentions(roles=[role], users=False, everyone=False),
+            )
+        except discord.HTTPException:
+            log.exception('Statut sauvegardé, mais notification non envoyée')
 
     async def close(self):
         self.reconcile.cancel()
+        await self.dashboard.close()
         await super().close()
         self.store.close()
 
@@ -357,6 +369,23 @@ async def configurer(interaction: discord.Interaction):
     await interaction.response.send_message(
         f"**Configuration des comptes drop**\n{current}\n\nChoisis le salon et, si souhaité, le rôle à prévenir, puis clique sur **Enregistrer**. Ce panneau expire après 5 minutes.",
         view=ConfigurationView(bot, interaction.user.id), ephemeral=True)
+
+
+@app_commands.command(name='panel', description='Ouvrir le tableau de bord web privé du bot')
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+async def web_panel(interaction: discord.Interaction):
+    bot = interaction.client
+    if not interaction.permissions.manage_guild or bot.guild_id not in (0, interaction.guild_id):
+        await interaction.response.send_message('Commande réservée aux responsables du serveur du bot.', ephemeral=True)
+        return
+    if not os.getenv('RAILWAY_PUBLIC_DOMAIN') and not os.getenv('DASHBOARD_URL'):
+        await interaction.response.send_message('Le domaine du tableau de bord doit être configuré dans Railway.', ephemeral=True)
+        return
+    url = bot.dashboard.issue(interaction.guild_id, interaction.user.id)
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label='Ouvrir le tableau de bord', url=url))
+    await interaction.response.send_message('Ton lien personnel est valable 5 minutes et une seule fois. Ne le partage pas. La session dure 8 heures ou jusqu’au redémarrage du bot.', view=view, ephemeral=True)
 
 
 def main():

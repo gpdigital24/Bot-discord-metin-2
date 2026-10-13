@@ -29,12 +29,22 @@ Un panneau par compte, avec prise et libération manuelles. Aucune connexion à 
 | --- | --- |
 | `DISCORD_TOKEN` | Token privé du bot |
 
-5. Garder **une seule réplique** et désactiver **Serverless / mise en veille**. Aucun domaine public, port HTTP ou healthcheck HTTP à configurer : le bot se connecte directement à Discord.
+5. Garder **une seule réplique** et désactiver **Serverless / mise en veille**. Pour le tableau de bord, dans **Settings → Networking**, générer un domaine Railway pointant sur le port `8080` (ou la variable `PORT` si définie). Railway renseigne `RAILWAY_PUBLIC_DOMAIN`. Relancer le déploiement si nécessaire pour prendre en compte le domaine.
 6. Déployer puis vérifier le journal : `Bot connecté`. Le service reste actif tant que l'hébergement fonctionne et dispose de crédits.
 
 La base appartient à un seul serveur. Activer les sauvegardes du volume dans Railway si souhaité.
 
 ## Panneau de configuration Discord
+
+### Tableau de bord web
+
+Lancer **/panel** dans Discord avec la permission **Gérer le serveur**. Le bot fournit en privé un lien utilisable une fois, pendant cinq minutes. Le tableau de bord permet de choisir le salon et le rôle, d'ajouter, renommer, retirer les comptes libres, et de libérer un compte en tant que responsable. Les réservations restent dans Discord.
+
+Les liens sont personnels : ne pas les partager. Les droits Discord sont revérifiés à chaque requête. Une session expire après huit heures ou au redémarrage du bot ; relancer `/panel` pour se reconnecter. Les cookies sont HttpOnly et Secure sur le domaine HTTPS, et les modifications vérifient l'origine et un jeton CSRF. Aucun token Discord n'est transmis au navigateur.
+
+`DASHBOARD_URL` peut remplacer le domaine automatique (URL HTTPS sans chemin). Pour le développement local uniquement, utiliser `http://localhost:8080`. Le serveur web utilise le port `PORT`, 8080 par défaut. `/health` confirme que le bot est connecté.
+
+### Configuration sans navigateur
 
 Une fois le bot connecté, un responsable avec **Gérer le serveur** lance **/configurer** dans Discord. Un panneau privé permet de choisir le salon textuel et un rôle facultatif à notifier, puis d'enregistrer. Le bot vérifie ses permissions dans le salon et la possibilité de mentionner le rôle. Le serveur est détecté automatiquement et la configuration est sauvegardée sur le volume.
 
