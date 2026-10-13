@@ -2,10 +2,11 @@
 const $ = id => document.getElementById(id);
 let state, filter = 'all', editing = null, pendingAction = null, working = false;
 function notice(message, error = false) { $('notice').textContent = message; $('notice').className = error ? 'error' : ''; $('notice').hidden = false; }
-function showLogin(message) { $('login').hidden = false; $('dashboard').hidden = true; $('login-message').textContent = message; }
+function showLogin(message) { state = null; $('login').hidden = false; $('dashboard').hidden = true; $('login-message').textContent = message; }
 async function api(path, data) {
   const options = {credentials: 'same-origin', headers: {}};
   if (data !== undefined) { options.method = 'POST'; options.headers = {'Content-Type': 'application/json', 'X-CSRF-Token': state?.csrf || ''}; options.body = JSON.stringify(data); }
+  if (state?.guild_id) options.headers['X-Guild-ID'] = state.guild_id;
   const res = await fetch('/api/' + path, options);
   const body = await res.json();
   if (!res.ok) { if (res.status === 401 || res.status === 403) showLogin(body.error); throw new Error(body.error || 'Une erreur est survenue.'); }

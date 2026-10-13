@@ -35,7 +35,7 @@ class Dashboard:
     def issue(self, guild_id, user_id):
         self.prune()
         for token in list(self.tickets):
-            if self.tickets[token]['user_id'] == user_id:
+            if self.tickets[token]['user_id'] == user_id and self.tickets[token]['guild_id'] == guild_id:
                 del self.tickets[token]
         token = secrets.token_urlsafe(32)
         self.tickets[token] = dict(guild_id=guild_id, user_id=user_id, expires=time.time() + 300)
@@ -45,8 +45,8 @@ class Dashboard:
         if not self.bot.is_ready():
             raise web.HTTPServiceUnavailable(text='Le bot se reconnecte. Réessaie dans quelques secondes.')
         guild = self.bot.get_guild(session['guild_id'])
-        if guild is None or self.bot.guild_id not in (0, guild.id):
-            raise web.HTTPForbidden(text='Ce serveur ne correspond pas au serveur configuré.')
+        if guild is None:
+            raise web.HTTPForbidden(text='Le bot ne fait plus partie de ce serveur.')
         try:
             member = await guild.fetch_member(session['user_id'])
         except discord.NotFound:
@@ -69,6 +69,9 @@ class Dashboard:
                     session = self.sessions.get(request.cookies.get('drop_session', ''))
                     if session is None:
                         raise web.HTTPUnauthorized(text='Ouvre un nouveau lien avec /panel dans Discord.')
+                    expected_guild = request.headers.get('X-Guild-ID')
+                    if expected_guild and expected_guild != str(session['guild_id']):
+                        raise web.HTTPForbidden(text='Un autre serveur a été ouvert dans ce navigateur. Relance /panel dans le serveur souhaité.')
                     if request.method == 'POST' and not secrets.compare_digest(request.headers.get('X-CSRF-Token', ''), session['csrf']):
                         raise web.HTTPForbidden(text='Recharge le tableau de bord avant de réessayer.')
                     request['session'] = session
@@ -125,8 +128,10 @@ class Dashboard:
     async def state(self, request):
         guild, member = request['guild'], request['member']
         accounts = []
-        for row in self.bot.store.all():
+        saved = self.bot.store.settings(guild.id)
+        for row in self.bot.store.all(guild.id):
             item = dict(row)
+            item['guild_id'] = str(row['guild_id'])
             owner = guild.get_member(row['owner']) if row['owner'] else None
             if row['owner'] and owner is None:
                 try:
@@ -139,8 +144,8 @@ class Dashboard:
             item['pending'] = row['id'] in self.bot.dirty
             accounts.append(item)
         return web.json_response({
-            'csrf': request['session']['csrf'], 'guild': guild.name, 'user': member.display_name,
-            'channel_id': str(self.bot.channel_id), 'role_id': str(self.bot.role_id),
+            'csrf': request['session']['csrf'], 'guild': guild.name, 'guild_id': str(guild.id), 'user': member.display_name,
+            'channel_id': str(saved['channel_id']), 'role_id': str(saved['role_id']),
             'channels': [{'id': str(c.id), 'name': c.name} for c in guild.text_channels if c.permissions_for(member).view_channel and c.permissions_for(guild.me).view_channel],
             'roles': [{'id': str(r.id), 'name': r.name} for r in guild.roles if not r.is_default()],
             'accounts': accounts,
@@ -150,8 +155,6 @@ class Dashboard:
         data = await request.json()
         guild, member = request['guild'], request['member']
         async with self.bot.lock:
-            if self.bot.guild_id not in (0, guild.id):
-                raise web.HTTPForbidden(text='Le bot est déjà configuré pour un autre serveur.')
             channel = guild.get_channel(int(data['channel_id']))
             role_id = int(data.get('role_id') or 0)
             role = guild.get_role(role_id) if role_id else None
@@ -164,45 +167,46 @@ class Dashboard:
                 raise web.HTTPBadRequest(text='Le rôle choisi doit avoir accès au salon.')
             if role and not role.mentionable and not perms.mention_everyone:
                 raise web.HTTPBadRequest(text='Rends le rôle mentionnable dans Discord pour recevoir les notifications.')
-            if self.bot.channel_id and self.bot.channel_id != channel.id and self.bot.store.all():
+            previous = self.bot.store.settings(guild.id)['channel_id']
+            if previous and previous != channel.id and self.bot.store.all(guild.id):
                 raise web.HTTPConflict(text='Retire les comptes existants avant de changer de salon.')
             self.bot.store.configure(guild.id, channel.id, role_id)
-            self.bot.guild_id, self.bot.channel_id, self.bot.role_id = guild.id, channel.id, role_id
         return web.json_response({'message': 'Configuration enregistrée.'})
 
     async def accounts(self, request):
         data = await request.json()
         action = data['action']
         async with self.bot.lock:
-            if self.bot.guild_id != request['guild'].id or not self.bot.channel_id:
+            guild_id = request['guild'].id
+            if not self.bot.store.settings(guild_id)['channel_id']:
                 raise web.HTTPConflict(text='Enregistre d’abord le salon dans Configuration.')
             if action in ('add', 'rename'):
                 name = str(data.get('name', '')).strip()
                 if not 1 <= len(name) <= 60:
                     raise web.HTTPBadRequest(text='Le nom doit contenir entre 1 et 60 caractères.')
             if action == 'add':
-                account_id = self.bot.store.add(name)
+                account_id = self.bot.store.add(name, guild_id)
             else:
                 account_id = int(data['id'])
-                account = self.bot.store.get(account_id)
+                account = self.bot.store.get(account_id, guild_id)
                 if account is None:
                     raise web.HTTPNotFound(text='Ce compte n’existe plus.')
                 if action == 'rename':
-                    self.bot.store.rename(account_id, name)
+                    self.bot.store.rename(account_id, name, guild_id)
                 elif action == 'release':
-                    if not self.bot.store.release(account_id, request['member'].id, manager=True):
+                    if not self.bot.store.release(account_id, request['member'].id, guild_id, manager=True):
                         raise web.HTTPConflict(text='Le compte est déjà disponible.')
                     await self.bot.notify_available(account)
                 elif action == 'remove':
                     if account['owner']:
                         raise web.HTTPConflict(text='Libère le compte avant de le retirer.')
-                    channel = await self.bot.channel()
+                    channel = await self.bot.channel(guild_id)
                     if account['message_id']:
                         try:
                             await channel.get_partial_message(account['message_id']).delete()
                         except discord.NotFound:
                             pass
-                    self.bot.store.remove(account_id)
+                    self.bot.store.remove(account_id, guild_id)
                     self.bot.dirty.discard(account_id)
                     return web.json_response({'message': 'Compte retiré.'})
                 elif action != 'refresh':

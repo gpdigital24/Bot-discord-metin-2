@@ -57,11 +57,9 @@ class AccountView(discord.ui.View):
 class DropBot(discord.Client):
     def __init__(self, guild_id, channel_id, role_id, store):
         super().__init__(intents=discord.Intents.default(), allowed_mentions=discord.AllowedMentions.none())
-        self.guild_id, self.channel_id, self.role_id = guild_id, channel_id, role_id
         self.store = store
-        saved = store.settings()
-        if saved:
-            self.guild_id, self.channel_id, self.role_id = saved['guild_id'], saved['channel_id'], saved['role_id']
+        if guild_id and channel_id and not store.settings(guild_id)['channel_id']:
+            store.configure(guild_id, channel_id, role_id)
         self.tree = app_commands.CommandTree(self)
         self.lock = asyncio.Lock()
         self.dirty = {row["id"] for row in store.all()}
@@ -76,25 +74,31 @@ class DropBot(discord.Client):
         self.tree.add_command(web_panel)
         await self.tree.sync()
         # Remove legacy guild-scoped commands, now published globally.
-        if self.guild_id:
-            self.tree.clear_commands(guild=discord.Object(id=self.guild_id))
-            await self.tree.sync(guild=discord.Object(id=self.guild_id))
+        for guild_id in self.store.configured_guilds():
+            try:
+                self.tree.clear_commands(guild=discord.Object(id=guild_id))
+                await self.tree.sync(guild=discord.Object(id=guild_id))
+            except discord.HTTPException:
+                log.warning('Serveur %s inaccessible pour la synchronisation des commandes', guild_id)
         self.reconcile.start()
         await self.dashboard.start(int(os.getenv('PORT', '8080')))
 
     async def on_ready(self):
         log.info("Bot connecté : %s", self.user)
 
-    async def channel(self):
-        channel = self.get_channel(self.channel_id) or await self.fetch_channel(self.channel_id)
-        if not isinstance(channel, discord.TextChannel) or channel.guild.id != self.guild_id:
+    async def channel(self, guild_id):
+        channel_id = self.store.settings(guild_id)['channel_id']
+        if not channel_id:
+            raise RuntimeError('Configure le salon des comptes avec /configurer ou /panel.')
+        channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild_id:
             raise RuntimeError("DISCORD_CHANNEL_ID doit désigner un salon textuel du serveur configuré.")
         return channel
 
     def permitted(self, interaction):
         return (
-            interaction.guild_id == self.guild_id
-            and interaction.channel_id == self.channel_id
+            interaction.guild_id is not None
+            and interaction.channel_id == self.store.settings(interaction.guild_id)['channel_id']
             and isinstance(interaction.user, discord.Member)
             and interaction.permissions.view_channel
         )
@@ -104,7 +108,7 @@ class DropBot(discord.Client):
         if account is None:
             self.dirty.discard(account_id)
             return
-        channel = await self.channel()
+        channel = await self.channel(account['guild_id'])
         view = AccountView(self, occupied=account["owner"] is not None)
         if account["message_id"]:
             try:
@@ -128,8 +132,6 @@ class DropBot(discord.Client):
 
     @tasks.loop(minutes=2)
     async def reconcile(self):
-        if not self.channel_id:
-            return
         async with self.lock:
             for account_id in list(self.dirty):
                 await self.try_publish(account_id)
@@ -144,13 +146,13 @@ class DropBot(discord.Client):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.lock:
-            account = self.store.by_message(interaction.message.id)
+            account = self.store.by_message(interaction.message.id, interaction.guild_id)
             if account is None:
                 await interaction.followup.send("Ce panneau n'est plus actif.", ephemeral=True)
                 return
             manager = interaction.permissions.manage_guild
-            changed = (self.store.take(account["id"], interaction.user.id) if taking else
-                       self.store.release(account["id"], interaction.user.id, manager))
+            changed = (self.store.take(account["id"], interaction.user.id, interaction.guild_id) if taking else
+                       self.store.release(account["id"], interaction.user.id, interaction.guild_id, manager))
             if not changed:
                 text = ("Ce compte est déjà pris." if taking else
                         "Seuls son utilisateur et les responsables peuvent libérer un compte occupé.")
@@ -165,11 +167,12 @@ class DropBot(discord.Client):
                 await self.notify_available(account)
 
     async def notify_available(self, account):
-        if not self.role_id:
+        role_id = self.store.settings(account['guild_id'])['role_id']
+        if not role_id:
             return
         try:
-            channel = await self.channel()
-            role = channel.guild.get_role(self.role_id)
+            channel = await self.channel(account['guild_id'])
+            role = channel.guild.get_role(role_id)
             if role is None or role.is_default() or not channel.permissions_for(role).view_channel:
                 log.warning('Rôle de notification absent ou sans accès au salon')
                 return
@@ -220,7 +223,7 @@ class AccountCommands(app_commands.Group):
             return
         async with self.bot.lock:
             try:
-                account_id = self.bot.store.add(nom)
+                account_id = self.bot.store.add(nom, interaction.guild_id)
             except sqlite3.IntegrityError:
                 await interaction.followup.send("Un compte porte déjà ce nom.", ephemeral=True)
                 return
@@ -238,7 +241,7 @@ class AccountCommands(app_commands.Group):
             return
         async with self.bot.lock:
             try:
-                changed = self.bot.store.rename(numero, nom.strip())
+                changed = self.bot.store.rename(numero, nom.strip(), interaction.guild_id)
             except sqlite3.IntegrityError:
                 await interaction.followup.send("Un compte porte déjà ce nom.", ephemeral=True)
                 return
@@ -250,17 +253,17 @@ class AccountCommands(app_commands.Group):
     async def retirer(self, interaction: discord.Interaction, numero: int, confirmer: bool):
         await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.bot.lock:
-            account = self.bot.store.get(numero)
+            account = self.bot.store.get(numero, interaction.guild_id)
             if not confirmer or account is None or account["owner"] is not None:
                 await interaction.followup.send("Choisis un compte libre et confirme sa suppression.", ephemeral=True)
                 return
             if account["message_id"]:
-                channel = await self.bot.channel()
+                channel = await self.bot.channel(interaction.guild_id)
                 try:
                     await channel.get_partial_message(account["message_id"]).delete()
                 except discord.NotFound:
                     pass
-            self.bot.store.remove(numero)
+            self.bot.store.remove(numero, interaction.guild_id)
             self.bot.dirty.discard(numero)
         await interaction.followup.send("Compte retiré.", ephemeral=True)
 
@@ -269,7 +272,7 @@ class AccountCommands(app_commands.Group):
         await interaction.response.defer(ephemeral=True, thinking=True)
         failures = 0
         async with self.bot.lock:
-            for account in self.bot.store.all():
+            for account in self.bot.store.all(interaction.guild_id):
                 if not await self.bot.try_publish(account["id"]):
                     failures += 1
         await interaction.followup.send(
@@ -279,17 +282,19 @@ class AccountCommands(app_commands.Group):
 
 
 class ConfigurationView(discord.ui.View):
-    def __init__(self, bot, user_id):
+    def __init__(self, bot, user_id, guild_id):
         super().__init__(timeout=300)
         self.bot, self.user_id = bot, user_id
-        self.channel_id, self.role_id = bot.channel_id, bot.role_id
+        self.guild_id = guild_id
+        saved = bot.store.settings(guild_id)
+        self.channel_id, self.role_id = saved['channel_id'], saved['role_id']
 
     async def interaction_check(self, interaction):
         allowed = (
             interaction.user.id == self.user_id
             and interaction.guild_id is not None
             and interaction.permissions.manage_guild
-            and self.bot.guild_id in (0, interaction.guild_id)
+            and self.guild_id == interaction.guild_id
         )
         if not allowed:
             await interaction.response.send_message("Ce panneau est réservé au responsable qui l'a ouvert sur le serveur du bot.", ephemeral=True)
@@ -314,8 +319,8 @@ class ConfigurationView(discord.ui.View):
     async def save(self, interaction, button):
         await interaction.response.defer()
         async with self.bot.lock:
-            if self.bot.guild_id not in (0, interaction.guild_id):
-                await interaction.followup.send("Le bot est déjà configuré pour un autre serveur.", ephemeral=True)
+            if self.guild_id != interaction.guild_id:
+                await interaction.followup.send("Ouvre un panneau depuis ce serveur.", ephemeral=True)
                 return
             channel = interaction.guild.get_channel(self.channel_id) if self.channel_id else None
             if not isinstance(channel, discord.TextChannel):
@@ -335,11 +340,11 @@ class ConfigurationView(discord.ui.View):
             if role and not role.mentionable and not permissions.mention_everyone:
                 await interaction.followup.send("Rends le rôle mentionnable, ou autorise le bot à mentionner tous les rôles dans ce salon.", ephemeral=True)
                 return
-            if self.bot.channel_id and self.bot.channel_id != channel.id and self.bot.store.all():
+            previous = self.bot.store.settings(interaction.guild_id)['channel_id']
+            if previous and previous != channel.id and self.bot.store.all(interaction.guild_id):
                 await interaction.followup.send("Pour changer de salon, libère puis retire les comptes existants avec /compte retirer. Tu pourras ensuite les ajouter dans le nouveau salon.", ephemeral=True)
                 return
             self.bot.store.configure(interaction.guild_id, channel.id, self.role_id)
-            self.bot.guild_id, self.bot.channel_id, self.bot.role_id = interaction.guild_id, channel.id, self.role_id
             for item in self.children:
                 item.disabled = True
             await interaction.edit_original_response(view=self)
@@ -361,14 +366,15 @@ class ConfigurationView(discord.ui.View):
 @app_commands.default_permissions(manage_guild=True)
 async def configurer(interaction: discord.Interaction):
     bot = interaction.client
-    if not interaction.permissions.manage_guild or bot.guild_id not in (0, interaction.guild_id):
+    if not interaction.guild_id or not interaction.permissions.manage_guild:
         await interaction.response.send_message("Commande réservée aux responsables du serveur du bot.", ephemeral=True)
         return
-    current = f"Salon actuel : <#{bot.channel_id}>" if bot.channel_id else "Aucun salon configuré."
-    current += f"\nRôle actuel : <@&{bot.role_id}>" if bot.role_id else "\nNotifications désactivées."
+    saved = bot.store.settings(interaction.guild_id)
+    current = f"Salon actuel : <#{saved['channel_id']}>" if saved['channel_id'] else "Aucun salon configuré."
+    current += f"\nRôle actuel : <@&{saved['role_id']}>" if saved['role_id'] else "\nNotifications désactivées."
     await interaction.response.send_message(
         f"**Configuration des comptes drop**\n{current}\n\nChoisis le salon et, si souhaité, le rôle à prévenir, puis clique sur **Enregistrer**. Ce panneau expire après 5 minutes.",
-        view=ConfigurationView(bot, interaction.user.id), ephemeral=True)
+        view=ConfigurationView(bot, interaction.user.id, interaction.guild_id), ephemeral=True)
 
 
 @app_commands.command(name='panel', description='Ouvrir le tableau de bord web privé du bot')
@@ -376,7 +382,7 @@ async def configurer(interaction: discord.Interaction):
 @app_commands.default_permissions(manage_guild=True)
 async def web_panel(interaction: discord.Interaction):
     bot = interaction.client
-    if not interaction.permissions.manage_guild or bot.guild_id not in (0, interaction.guild_id):
+    if not interaction.guild_id or not interaction.permissions.manage_guild:
         await interaction.response.send_message('Commande réservée aux responsables du serveur du bot.', ephemeral=True)
         return
     if not os.getenv('RAILWAY_PUBLIC_DOMAIN') and not os.getenv('DASHBOARD_URL'):
@@ -403,7 +409,7 @@ def main():
     if os.getenv("RAILWAY_ENVIRONMENT_ID") and not os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
         raise SystemExit("Ajoute un volume Railway monté sur /data pour conserver les statuts.")
     directory = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR", "data")
-    store = Store(Path(directory) / "accounts.sqlite3")
+    store = Store(Path(directory) / "accounts.sqlite3", legacy_guild_id=guild_id)
     DropBot(guild_id, channel_id, role_id, store).run(os.environ["DISCORD_TOKEN"], log_handler=None)
 
 

@@ -26,6 +26,7 @@ def fixture(path):
                           get_guild=lambda i: guild if i == 11 else None,
                           try_publish=AsyncMock(return_value=True), channel=AsyncMock(return_value=channel),
                           notify_available=AsyncMock())
+    bot.store.configure(11, 22, 0)
     return bot, guild, member
 
 
@@ -79,7 +80,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await action({'action':'add','name':'Drop 1'})).status, 200)
         account = self.bot.store.all()[0]
         self.assertEqual((await action({'action':'rename','id':account['id'],'name':'Forêt'})).status, 200)
-        self.bot.store.take(account['id'],10)
+        self.bot.store.take(account['id'],10,11)
         self.assertEqual((await action({'action':'remove','id':account['id']})).status, 409)
         self.assertEqual((await action({'action':'release','id':account['id']})).status, 200)
         self.bot.notify_available.assert_awaited_once()
@@ -90,7 +91,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         headers, _ = await self.login()
         response = await self.client.post('/api/settings',json={'channel_id':'22','role_id':'0'},headers=headers)
         self.assertEqual(response.status, 200)
-        self.assertEqual(self.bot.store.settings()['guild_id'],11)
+        self.assertEqual(self.bot.store.settings(11)['guild_id'],11)
         self.assertEqual((await self.client.post('/api/logout',json={},headers=headers)).status, 200)
         self.assertEqual((await self.client.get('/api/state')).status, 401)
 

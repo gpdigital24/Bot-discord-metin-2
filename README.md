@@ -32,13 +32,17 @@ Un panneau par compte, avec prise et libération manuelles. Aucune connexion à 
 5. Garder **une seule réplique** et désactiver **Serverless / mise en veille**. Pour le tableau de bord, dans **Settings → Networking**, générer un domaine Railway pointant sur le port `8080` (ou la variable `PORT` si définie). Railway renseigne `RAILWAY_PUBLIC_DOMAIN`. Relancer le déploiement si nécessaire pour prendre en compte le domaine.
 6. Déployer puis vérifier le journal : `Bot connecté`. Le service reste actif tant que l'hébergement fonctionne et dispose de crédits.
 
-La base appartient à un seul serveur. Activer les sauvegardes du volume dans Railway si souhaité.
+Le bot peut être installé sur plusieurs serveurs. Chaque serveur possède son salon, son rôle et ses comptes indépendants. Un même nom de compte peut être utilisé dans deux serveurs. Activer les sauvegardes du volume dans Railway si souhaité.
+
+Lors de la première mise à jour depuis la version à un seul serveur, une copie SQLite `accounts.sqlite3.before-multiguild.bak` est créée sur le volume. La migration conserve les comptes, leurs statuts, leurs boutons et la configuration dans leur serveur d'origine. Si des anciens comptes existent sans serveur identifiable, le bot s'arrête sans modifier leur table ; renseigner alors `DISCORD_GUILD_ID` pour identifier leur serveur.
 
 ## Panneau de configuration Discord
 
 ### Tableau de bord web
 
 Lancer **/panel** dans Discord avec la permission **Gérer le serveur**. Le bot fournit en privé un lien utilisable une fois, pendant cinq minutes. Le tableau de bord permet de choisir le salon et le rôle, d'ajouter, renommer, retirer les comptes libres, et de libérer un compte en tant que responsable. Les réservations restent dans Discord.
+
+Le lien ouvre uniquement le serveur dans lequel `/panel` a été lancé. Pour gérer un autre serveur, lancer `/panel` dans cet autre serveur. Le nom du serveur est affiché en haut de la page. Une session de navigateur est active à la fois : ouvrir un autre serveur remplace la session précédente. Les anciens onglets bloquent les modifications au lieu de changer silencieusement de serveur.
 
 Les liens sont personnels : ne pas les partager. Les droits Discord sont revérifiés à chaque requête. Une session expire après huit heures ou au redémarrage du bot ; relancer `/panel` pour se reconnecter. Les cookies sont HttpOnly et Secure sur le domaine HTTPS, et les modifications vérifient l'origine et un jeton CSRF. Aucun token Discord n'est transmis au navigateur.
 
@@ -50,7 +54,7 @@ Une fois le bot connecté, un responsable avec **Gérer le serveur** lance **/co
 
 Pour modifier le rôle ou désactiver les notifications, relancer la commande. Le panneau expire après cinq minutes. Pour changer de salon alors que des comptes existent, les libérer puis les retirer avant de configurer le nouveau salon. Les commandes globales peuvent mettre un peu de temps à apparaître dans Discord.
 
-Les anciennes variables `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID` et `DISCORD_NOTIFY_ROLE_ID` restent facultativement prises en charge pour compatibilité ; une configuration sauvegardée dans le panneau est prioritaire.
+Les anciennes variables `DISCORD_GUILD_ID`, `DISCORD_CHANNEL_ID` et `DISCORD_NOTIFY_ROLE_ID` restent facultativement prises en charge pour initialiser ce serveur s'il n'est pas encore configuré ; elles ne limitent pas l'accès aux autres serveurs.
 
 ## 3. Ajouter les comptes dans Discord
 

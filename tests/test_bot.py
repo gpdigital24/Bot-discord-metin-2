@@ -17,7 +17,7 @@ class StoreTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name) / "accounts.sqlite3"
         self.store = Store(self.path)
-        self.account = self.store.add("Drop 1")
+        self.account = self.store.add("Drop 1", 1)
 
     def tearDown(self):
         self.store.close()
@@ -27,49 +27,49 @@ class StoreTests(unittest.TestCase):
         def claim(user):
             other = Store(self.path)
             try:
-                return other.take(self.account, user)
+                return other.take(self.account, user, 1)
             finally:
                 other.close()
         with ThreadPoolExecutor(max_workers=4) as pool:
             self.assertEqual(sum(pool.map(claim, [10, 20, 30, 40])), 1)
 
     def test_release_requires_owner_or_manager(self):
-        self.assertTrue(self.store.take(self.account, 10))
-        self.assertFalse(self.store.release(self.account, 20))
+        self.assertTrue(self.store.take(self.account, 10, 1))
+        self.assertFalse(self.store.release(self.account, 20, 1))
         self.assertEqual(self.store.get(self.account)["owner"], 10)
-        self.assertTrue(self.store.release(self.account, 20, manager=True))
+        self.assertTrue(self.store.release(self.account, 20, 1, manager=True))
         self.assertIsNone(self.store.get(self.account)["since"])
-        self.assertTrue(self.store.take(self.account, 30))
-        self.assertTrue(self.store.release(self.account, 30))
+        self.assertTrue(self.store.take(self.account, 30, 1))
+        self.assertTrue(self.store.release(self.account, 30, 1))
 
     def test_persists_on_restart_and_accounts_are_independent(self):
-        second = self.store.add("Drop 2")
-        self.store.take(self.account, 10)
+        second = self.store.add("Drop 2", 1)
+        self.store.take(self.account, 10, 1)
         self.store.message(self.account, 123456)
         self.store.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.by_message(123456)["owner"], 10)
+        self.assertEqual(self.store.by_message(123456, 1)["owner"], 10)
         self.assertIsNone(self.store.get(second)["owner"])
         self.assertIn("<@10>", panel(self.store.get(self.account)).description)
 
     def test_duplicate_name_and_deleted_account(self):
         with self.assertRaises(sqlite3.IntegrityError):
-            self.store.add("drop 1")
-        self.store.remove(self.account)
-        self.assertFalse(self.store.take(self.account, 10))
+            self.store.add("drop 1", 1)
+        self.store.remove(self.account, 1)
+        self.assertFalse(self.store.take(self.account, 10, 1))
 
     def test_configuration_survives_restart(self):
         self.store.configure(1, 2, 3)
         self.store.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.settings()['role_id'], 3)
+        self.assertEqual(self.store.settings(1)['role_id'], 3)
 
 
 class InteractionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.directory.name) / "db.sqlite3")
-        self.account = self.store.add("Drop 1")
+        self.account = self.store.add("Drop 1", 1)
         self.store.message(self.account, 123)
         self.bot = DropBot(1, 2, 0, self.store)
 
@@ -79,7 +79,7 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
 
     def interaction(self, user=10, manager=False):
         return SimpleNamespace(
-            message=SimpleNamespace(id=123), user=SimpleNamespace(id=user),
+            message=SimpleNamespace(id=123), user=SimpleNamespace(id=user), guild_id=1,
             permissions=SimpleNamespace(manage_guild=manager),
             response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
@@ -127,7 +127,7 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.account, self.bot.dirty)
 
     async def test_configuration_permission_checks(self):
-        view = ConfigurationView(self.bot, 10)
+        view = ConfigurationView(self.bot, 10, 1)
         interaction = self.interaction(20, manager=True)
         interaction.guild_id = 1
         self.assertFalse(await view.interaction_check(interaction))
@@ -138,8 +138,8 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         view.stop()
 
     async def test_configuration_saves_without_environment_ids(self):
-        self.bot.guild_id = self.bot.channel_id = 0
-        view = ConfigurationView(self.bot, 10)
+        self.store.configure(1, 0, 0)
+        view = ConfigurationView(self.bot, 10, 1)
         view.channel_id = 2
         from unittest.mock import MagicMock
         channel = MagicMock(spec=discord.TextChannel)
@@ -150,8 +150,8 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         interaction.guild = SimpleNamespace(get_channel=lambda _: channel, me=object())
         interaction.edit_original_response = AsyncMock()
         await view.save.callback(interaction)
-        self.assertEqual(self.store.settings()['channel_id'], 2)
-        self.assertEqual(self.bot.guild_id, 1)
+        self.assertEqual(self.store.settings(1)['channel_id'], 2)
+        self.assertEqual(self.store.settings(1)["guild_id"], 1)
         self.assertTrue(all(item.disabled for item in view.children))
 
 
