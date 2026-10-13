@@ -145,7 +145,7 @@ class Dashboard:
             accounts.append(item)
         return web.json_response({
             'csrf': request['session']['csrf'], 'guild': guild.name, 'guild_id': str(guild.id), 'user': member.display_name,
-            'channel_id': str(saved['channel_id']), 'role_id': str(saved['role_id']),
+            'channel_id': str(saved['channel_id']), 'role_id': str(saved['role_id']), 'role_ids': [str(r) for r in saved['role_ids']],
             'channels': [{'id': str(c.id), 'name': c.name} for c in guild.text_channels if c.permissions_for(member).view_channel and c.permissions_for(guild.me).view_channel],
             'roles': [{'id': str(r.id), 'name': r.name} for r in guild.roles if not r.is_default()],
             'accounts': accounts,
@@ -156,21 +156,24 @@ class Dashboard:
         guild, member = request['guild'], request['member']
         async with self.bot.lock:
             channel = guild.get_channel(int(data['channel_id']))
-            role_id = int(data.get('role_id') or 0)
-            role = guild.get_role(role_id) if role_id else None
+            raw_roles = data.get('role_ids', [data['role_id']] if data.get('role_id') else [])
+            if not isinstance(raw_roles, list) or len(raw_roles) > 25:
+                raise web.HTTPBadRequest(text='Choisis au maximum 25 rôles.')
+            role_ids = sorted(set(int(r) for r in raw_roles if int(r)))
+            roles = [guild.get_role(r) for r in role_ids]
             if not isinstance(channel, discord.TextChannel) or not channel.permissions_for(member).view_channel:
                 raise web.HTTPBadRequest(text='Choisis un salon textuel auquel tu as accès.')
             perms = channel.permissions_for(guild.me)
             if not all((perms.view_channel, perms.send_messages, perms.embed_links, perms.read_message_history)):
                 raise web.HTTPBadRequest(text='Le bot doit pouvoir voir le salon, envoyer des messages, intégrer des liens et voir les anciens messages.')
-            if role_id and (role is None or role.is_default() or not channel.permissions_for(role).view_channel):
-                raise web.HTTPBadRequest(text='Le rôle choisi doit avoir accès au salon.')
-            if role and not role.mentionable and not perms.mention_everyone:
-                raise web.HTTPBadRequest(text='Rends le rôle mentionnable dans Discord pour recevoir les notifications.')
+            if any(role is None or role.is_default() or not channel.permissions_for(role).view_channel for role in roles):
+                raise web.HTTPBadRequest(text='Chaque rôle choisi doit avoir accès au salon.')
+            if any(not role.mentionable for role in roles) and not perms.mention_everyone:
+                raise web.HTTPBadRequest(text='Rends les rôles sélectionnés mentionnables dans Discord pour recevoir les notifications.')
             previous = self.bot.store.settings(guild.id)['channel_id']
             if previous and previous != channel.id and self.bot.store.all(guild.id):
                 raise web.HTTPConflict(text='Retire les comptes existants avant de changer de salon.')
-            self.bot.store.configure(guild.id, channel.id, role_id)
+            self.bot.store.configure(guild.id, channel.id, role_ids)
         return web.json_response({'message': 'Configuration enregistrée.'})
 
     async def accounts(self, request):

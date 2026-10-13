@@ -16,8 +16,14 @@ function page(settings) { $('accounts-page').hidden = settings; $('settings-page
 function option(value, text) { const o = document.createElement('option'); o.value = value; o.textContent = text; return o; }
 function renderSettings() {
   $('channel').replaceChildren(option('', 'Sélectionner un salon…'), ...state.channels.map(c => option(c.id, '# ' + c.name)));
-  $('role').replaceChildren(option('0', 'Aucune notification'), ...state.roles.map(r => option(r.id, '@ ' + r.name)));
-  $('channel').value = state.channel_id === '0' ? '' : state.channel_id; $('role').value = state.role_id;
+  $('roles').replaceChildren();
+  for (const r of state.roles) {
+    const label = document.createElement('label');
+    const input = document.createElement('input'); input.type = 'checkbox'; input.value = r.id; input.checked = state.role_ids.includes(r.id);
+    label.append(input, document.createTextNode('@ ' + r.name)); $('roles').append(label);
+  }
+  if (!state.roles.length) $('roles').textContent = 'Aucun rôle disponible sur ce serveur.';
+  $('channel').value = state.channel_id === '0' ? '' : state.channel_id;
 }
 function button(text, cls, action) { const b = document.createElement('button'); b.textContent = text; b.className = 'quiet ' + cls; b.addEventListener('click', action); return b; }
 function render() {
@@ -39,7 +45,7 @@ function render() {
     if (a.pending) { detail.append(document.createElement('br'), 'Mise à jour Discord en attente.'); detail.className = 'pending'; }
     const actions = document.createElement('div'); actions.className = 'card-actions';
     actions.append(button('Renommer', '', () => edit(a)));
-    if (a.owner) actions.append(button('Libérer', 'release', () => confirmAction('Libérer le compte ?', `Le compte « ${a.name} » redeviendra disponible et le rôle configuré sera prévenu.`, {action:'release',id:a.id})));
+    if (a.owner) actions.append(button('Libérer', 'release', () => confirmAction('Libérer le compte ?', `Le compte « ${a.name} » redeviendra disponible et les rôles configurés seront prévenus.`, {action:'release',id:a.id})));
     if (!a.owner) actions.append(button('Retirer', 'remove', () => confirmAction('Retirer le compte ?', `Le panneau « ${a.name} » sera supprimé de Discord.`, {action:'remove',id:a.id})));
     if (a.pending) actions.append(button('Réessayer', '', () => run(() => mutate({action:'refresh',id:a.id}))));
     card.append(top, title, detail, actions); $('accounts').append(card);
@@ -61,7 +67,7 @@ $('refresh').onclick = () => run(() => load());
 $('cancel-editor').onclick = () => $('editor').close(); $('cancel-confirm').onclick = () => $('confirm-dialog').close();
 $('editor-form').onsubmit = e => { e.preventDefault(); const data = {action:editing ? 'rename':'add', name:$('account-name').value.trim(), id:editing?.id}; run(async () => { await mutate(data); $('editor').close(); }); };
 $('confirm-form').onsubmit = e => { e.preventDefault(); run(async () => { await mutate(pendingAction); $('confirm-dialog').close(); }); };
-$('settings-form').onsubmit = e => { e.preventDefault(); run(async () => { const res = await api('settings', {channel_id:$('channel').value, role_id:$('role').value}); await load(true); notice(res.message); }); };
+$('settings-form').onsubmit = e => { e.preventDefault(); run(async () => { const res = await api('settings', {channel_id:$('channel').value, role_ids:[...$('roles').querySelectorAll('input:checked')].map(input => input.value)}); await load(true); notice(res.message); }); };
 $('logout').onclick = () => run(async () => { await api('logout', {}); state = null; showLogin('Vous êtes déconnecté. Utilisez /panel dans Discord pour revenir.'); });
 document.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => { filter = b.dataset.filter; document.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('selected', x === b)); render(); });
 async function start() {

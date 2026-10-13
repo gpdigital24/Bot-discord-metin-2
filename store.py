@@ -40,6 +40,10 @@ class Store:
             self._schema()
             self.db.commit()
 
+        with self.db:
+            self.db.execute('CREATE TABLE IF NOT EXISTS notification_roles (guild_id INTEGER NOT NULL, role_id INTEGER NOT NULL, PRIMARY KEY(guild_id, role_id))')
+            self.db.execute('INSERT OR IGNORE INTO notification_roles SELECT guild_id,role_id FROM guild_settings WHERE role_id != 0')
+
     def _schema(self):
         self.db.execute('''CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
@@ -50,14 +54,21 @@ class Store:
 
     def settings(self, guild_id):
         row = self.db.execute('SELECT * FROM guild_settings WHERE guild_id=?', (guild_id,)).fetchone()
-        return dict(row) if row else dict(guild_id=guild_id, channel_id=0, role_id=0)
+        result = dict(row) if row else dict(guild_id=guild_id, channel_id=0, role_id=0)
+        result['role_ids'] = [r[0] for r in self.db.execute('SELECT role_id FROM notification_roles WHERE guild_id=? ORDER BY role_id', (guild_id,))]
+        return result
 
     def configured_guilds(self):
         return [r[0] for r in self.db.execute('SELECT guild_id FROM guild_settings')]
 
     def configure(self, guild_id, channel_id, role_id):
+        roles = sorted(set(int(r) for r in (role_id if isinstance(role_id, list) else [role_id]) if int(r)))
+        if len(roles) > 25 or any(r < 1 for r in roles):
+            raise ValueError('Choisis au maximum 25 rôles.')
         with self.db:
-            self.db.execute('INSERT OR REPLACE INTO guild_settings VALUES (?,?,?)', (guild_id, channel_id, role_id))
+            self.db.execute('INSERT OR REPLACE INTO guild_settings VALUES (?,?,?)', (guild_id, channel_id, roles[0] if roles else 0))
+            self.db.execute('DELETE FROM notification_roles WHERE guild_id=?', (guild_id,))
+            self.db.executemany('INSERT INTO notification_roles VALUES (?,?)', [(guild_id, r) for r in roles])
 
     def all(self, guild_id=None):
         if guild_id is None:

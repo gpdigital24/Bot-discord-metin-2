@@ -94,3 +94,5 @@ Documentation : [discord.py](https://discordpy.readthedocs.io/en/stable/interact
 ## Page publique d’invitation
 
 Partagez https://bot-discord-metin-2-production.up.railway.app/inviter pour inviter le bot sur un serveur. Cette page reste publique même si une session de gestion est ouverte. Le bouton ouvre Discord avec les scopes bot et applications.commands et les seules permissions de salon nécessaires. Après installation, utilisez /panel dans le serveur choisi.
+
+Les notifications acceptent jusqu’à 25 rôles par serveur : cochez-les dans Configuration du panel web, ou sélectionnez-les avec /configurer. Le rôle précédemment enregistré est conservé. Décochez tous les rôles pour désactiver les notifications.

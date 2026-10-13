@@ -167,18 +167,19 @@ class DropBot(discord.Client):
                 await self.notify_available(account)
 
     async def notify_available(self, account):
-        role_id = self.store.settings(account['guild_id'])['role_id']
-        if not role_id:
+        role_ids = self.store.settings(account['guild_id'])['role_ids']
+        if not role_ids:
             return
         try:
             channel = await self.channel(account['guild_id'])
-            role = channel.guild.get_role(role_id)
-            if role is None or role.is_default() or not channel.permissions_for(role).view_channel:
-                log.warning('Rôle de notification absent ou sans accès au salon')
+            roles = [channel.guild.get_role(r) for r in role_ids]
+            roles = [r for r in roles if r and not r.is_default() and channel.permissions_for(r).view_channel]
+            if not roles:
                 return
+            mentions = ' '.join(r.mention for r in roles)
             await channel.send(
-                f"{role.mention} — **{discord.utils.escape_markdown(account['name'])}** est disponible !",
-                allowed_mentions=discord.AllowedMentions(roles=[role], users=False, everyone=False),
+                f"{mentions} — **{discord.utils.escape_markdown(account['name'])}** est disponible !",
+                allowed_mentions=discord.AllowedMentions(roles=roles, users=False, everyone=False),
             )
         except discord.HTTPException:
             log.exception('Statut sauvegardé, mais notification non envoyée')
@@ -287,7 +288,8 @@ class ConfigurationView(discord.ui.View):
         self.bot, self.user_id = bot, user_id
         self.guild_id = guild_id
         saved = bot.store.settings(guild_id)
-        self.channel_id, self.role_id = saved['channel_id'], saved['role_id']
+        self.channel_id, self.role_ids = saved['channel_id'], saved['role_ids']
+        self.select_role.default_values = [discord.SelectDefaultValue(id=r, type=discord.SelectDefaultValueType.role) for r in self.role_ids]
 
     async def interaction_check(self, interaction):
         allowed = (
@@ -305,14 +307,14 @@ class ConfigurationView(discord.ui.View):
         self.channel_id = select.values[0].id
         await interaction.response.defer()
 
-    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Rôle à prévenir (facultatif)", min_values=0, max_values=1)
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Rôles à prévenir (facultatif, jusqu’à 25)", min_values=0, max_values=25)
     async def select_role(self, interaction, select):
-        self.role_id = select.values[0].id if select.values else 0
+        self.role_ids = [r.id for r in select.values]
         await interaction.response.defer()
 
     @discord.ui.button(label="Désactiver les notifications", style=discord.ButtonStyle.secondary)
     async def no_notifications(self, interaction, button):
-        self.role_id = 0
+        self.role_ids = []
         await interaction.response.send_message("Notifications désactivées dans ce brouillon. Clique sur Enregistrer pour appliquer.", ephemeral=True)
 
     @discord.ui.button(label="Enregistrer", style=discord.ButtonStyle.success)
@@ -333,24 +335,24 @@ class ConfigurationView(discord.ui.View):
             if not all((permissions.view_channel, permissions.send_messages, permissions.embed_links, permissions.read_message_history)):
                 await interaction.followup.send("Dans ce salon, accorde au bot : Voir les salons, Envoyer des messages, Intégrer des liens et Voir les anciens messages.", ephemeral=True)
                 return
-            role = interaction.guild.get_role(self.role_id) if self.role_id else None
-            if self.role_id and (role is None or role.is_default() or not channel.permissions_for(role).view_channel):
+            roles = [interaction.guild.get_role(r) for r in self.role_ids]
+            if any(role is None or role.is_default() or not channel.permissions_for(role).view_channel for role in roles):
                 await interaction.followup.send("Choisis un rôle existant ayant accès au salon, autre que @everyone.", ephemeral=True)
                 return
-            if role and not role.mentionable and not permissions.mention_everyone:
-                await interaction.followup.send("Rends le rôle mentionnable, ou autorise le bot à mentionner tous les rôles dans ce salon.", ephemeral=True)
+            if any(not role.mentionable for role in roles) and not permissions.mention_everyone:
+                await interaction.followup.send("Rends les rôles mentionnables, ou autorise le bot à mentionner tous les rôles dans ce salon.", ephemeral=True)
                 return
             previous = self.bot.store.settings(interaction.guild_id)['channel_id']
             if previous and previous != channel.id and self.bot.store.all(interaction.guild_id):
                 await interaction.followup.send("Pour changer de salon, libère puis retire les comptes existants avec /compte retirer. Tu pourras ensuite les ajouter dans le nouveau salon.", ephemeral=True)
                 return
-            self.bot.store.configure(interaction.guild_id, channel.id, self.role_id)
+            self.bot.store.configure(interaction.guild_id, channel.id, self.role_ids)
             for item in self.children:
                 item.disabled = True
             await interaction.edit_original_response(view=self)
             self.stop()
             await interaction.followup.send(
-                f"Configuration sauvegardée !\nSalon : {channel.mention}\nNotifications : {role.mention if role else 'désactivées'}\nAjoute tes comptes dans ce salon avec **/compte ajouter**.", ephemeral=True)
+                f"Configuration sauvegardée !\nSalon : {channel.mention}\nNotifications : {' '.join(r.mention for r in roles) if roles else 'désactivées'}\nAjoute tes comptes dans ce salon avec **/compte ajouter**.", ephemeral=True)
 
     async def on_error(self, interaction, error, item):
         log.error("Erreur de configuration", exc_info=(type(error), error, error.__traceback__))
@@ -371,9 +373,9 @@ async def configurer(interaction: discord.Interaction):
         return
     saved = bot.store.settings(interaction.guild_id)
     current = f"Salon actuel : <#{saved['channel_id']}>" if saved['channel_id'] else "Aucun salon configuré."
-    current += f"\nRôle actuel : <@&{saved['role_id']}>" if saved['role_id'] else "\nNotifications désactivées."
+    current += "\nRôles actuels : " + " ".join(f"<@&{r}>" for r in saved["role_ids"]) if saved["role_ids"] else "\nNotifications désactivées."
     await interaction.response.send_message(
-        f"**Configuration des comptes drop**\n{current}\n\nChoisis le salon et, si souhaité, le rôle à prévenir, puis clique sur **Enregistrer**. Ce panneau expire après 5 minutes.",
+        f"**Configuration des comptes drop**\n{current}\n\nChoisis le salon et, si souhaité, les rôles à prévenir, puis clique sur **Enregistrer**. Ce panneau expire après 5 minutes.",
         view=ConfigurationView(bot, interaction.user.id, interaction.guild_id), ephemeral=True)
 
 

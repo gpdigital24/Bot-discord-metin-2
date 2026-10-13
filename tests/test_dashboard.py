@@ -100,3 +100,46 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status,200)
         self.assertIn("frame-ancestors 'none'",response.headers['Content-Security-Policy'])
         self.assertNotIn('Gwend',await response.text())
+
+    async def test_multiple_roles_persist_validate_and_notify(self):
+        from bot import DropBot
+        roles = []
+        for rid in (31, 32):
+            role = MagicMock(spec=discord.Role)
+            role.id, role.name, role.mention, role.mentionable = rid, str(rid), f'<@&{rid}>', True
+            role.is_default.return_value = False
+            roles.append(role)
+        self.guild.roles = roles
+        self.guild.get_role = lambda rid: next((r for r in roles if r.id == rid), None)
+        channel = self.guild.text_channels[0]
+        channel.guild = self.guild
+        channel.send = AsyncMock()
+        headers, _ = await self.login()
+        response = await self.client.post('/api/settings', json={'channel_id':'22', 'role_ids':['31','32','31']}, headers=headers)
+        self.assertEqual(response.status, 200)
+        state = await (await self.client.get('/api/state')).json()
+        self.assertEqual(state['role_ids'], ['31','32'])
+        self.bot.store.close()
+        self.bot.store = Store(Path(self.tmp.name) / 'db.sqlite3')
+        self.assertEqual(self.bot.store.settings(11)['role_ids'], [31,32])
+        await DropBot.notify_available(self.bot, {'guild_id':11,'name':'Drop'})
+        args = channel.send.call_args
+        self.assertIn('<@&31> <@&32>', args.args[0])
+        self.assertEqual(args.kwargs['allowed_mentions'].roles, roles)
+        self.assertFalse(args.kwargs['allowed_mentions'].everyone)
+        for bad in (['31','999'], ['31'] * 26, '31'):
+            response = await self.client.post('/api/settings', json={'channel_id':'22','role_ids':bad}, headers=headers)
+            self.assertEqual(response.status, 400)
+            self.assertEqual(self.bot.store.settings(11)['role_ids'], [31,32])
+        response = await self.client.post('/api/settings', json={'channel_id':'22','role_ids':[]}, headers=headers)
+        self.assertEqual(response.status, 200)
+        self.bot.store.close()
+        self.bot.store = Store(Path(self.tmp.name) / 'db.sqlite3')
+        self.assertEqual(self.bot.store.settings(11)['role_ids'], [])
+
+    async def test_old_single_role_settings_are_migrated(self):
+        self.bot.store.db.execute('INSERT OR REPLACE INTO guild_settings VALUES (11,22,31)')
+        self.bot.store.db.commit()
+        self.bot.store.close()
+        self.bot.store = Store(Path(self.tmp.name) / 'db.sqlite3')
+        self.assertEqual(self.bot.store.settings(11)['role_ids'], [31])
