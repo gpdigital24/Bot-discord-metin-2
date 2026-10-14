@@ -121,6 +121,18 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get(self.account)["owner"], 10)
         self.assertIn(self.account, self.bot.dirty)
 
+    async def test_successful_buttons_are_silent_but_still_notify_roles(self):
+        self.bot.permitted = lambda interaction: True
+        self.bot.try_publish = AsyncMock(return_value=True)
+        self.bot.notify_status = AsyncMock()
+        for taking in (True, False):
+            interaction = self.interaction()
+            await self.bot.change(interaction, taking)
+            interaction.response.defer.assert_awaited_once_with(thinking=False)
+            interaction.followup.send.assert_not_awaited()
+        self.assertEqual(self.bot.notify_status.await_count, 2)
+        self.assertIsNone(self.store.get(self.account)['owner'])
+
     async def test_missing_panel_is_recreated(self):
         response = SimpleNamespace(status=404, reason="Not Found")
         partial = SimpleNamespace(edit=AsyncMock(side_effect=discord.NotFound(response, "missing")))

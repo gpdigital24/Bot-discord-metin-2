@@ -144,7 +144,7 @@ class DropBot(discord.Client):
         if not self.permitted(interaction):
             await interaction.response.send_message("Ce bouton est réservé au salon des comptes drop.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.response.defer(thinking=False)
         async with self.lock:
             account = self.store.by_message(interaction.message.id, interaction.guild_id)
             if account is None:
@@ -159,10 +159,8 @@ class DropBot(discord.Client):
                 await interaction.followup.send(text, ephemeral=True)
                 return
             published = await self.try_publish(account["id"])
-            result = "Compte réservé pour toi." if taking else "Compte libéré."
             if not published:
-                result += " Le statut est sauvegardé ; la mise à jour du panneau sera réessayée."
-            await interaction.followup.send(result, ephemeral=True)
+                await interaction.followup.send("Le statut est sauvegardé ; la mise à jour du panneau sera réessayée.", ephemeral=True)
             if taking:
                 await self.notify_status(account, taken_by=interaction.user.id)
             else:
