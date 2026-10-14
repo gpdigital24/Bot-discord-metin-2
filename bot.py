@@ -163,10 +163,15 @@ class DropBot(discord.Client):
             if not published:
                 result += " Le statut est sauvegardé ; la mise à jour du panneau sera réessayée."
             await interaction.followup.send(result, ephemeral=True)
-            if not taking:
+            if taking:
+                await self.notify_status(account, taken_by=interaction.user.id)
+            else:
                 await self.notify_available(account)
 
     async def notify_available(self, account):
+        await self.notify_status(account)
+
+    async def notify_status(self, account, taken_by=None):
         role_ids = self.store.settings(account['guild_id'])['role_ids']
         if not role_ids:
             return
@@ -177,8 +182,9 @@ class DropBot(discord.Client):
             if not roles:
                 return
             mentions = ' '.join(r.mention for r in roles)
+            status = f'est pris par <@{taken_by}>.' if taken_by is not None else 'est disponible !'
             await channel.send(
-                f"{mentions} — **{discord.utils.escape_markdown(account['name'])}** est disponible !",
+                f"{mentions} — **{discord.utils.escape_markdown(account['name'])}** {status}",
                 allowed_mentions=discord.AllowedMentions(roles=roles, users=False, everyone=False),
             )
         except discord.HTTPException:

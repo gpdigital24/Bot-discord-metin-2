@@ -102,9 +102,13 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
     async def test_callbacks_serialize_and_cannot_release_other_member(self):
         self.bot.permitted = lambda interaction: True
         self.bot.try_publish = AsyncMock(return_value=True)
+        self.bot.notify_status = AsyncMock()
         await asyncio.gather(self.bot.change(self.interaction(10), True), self.bot.change(self.interaction(20), True))
         self.assertEqual(self.store.get(self.account)["owner"], 10)
+        self.bot.notify_status.assert_awaited_once()
+        self.assertEqual(self.bot.notify_status.call_args.kwargs, {"taken_by":10})
         await self.bot.change(self.interaction(20), False)
+        self.bot.notify_status.assert_awaited_once()
         self.assertEqual(self.store.get(self.account)["owner"], 10)
         await self.bot.change(self.interaction(20, manager=True), False)
         self.assertIsNone(self.store.get(self.account)["owner"])

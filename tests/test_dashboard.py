@@ -122,11 +122,18 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.bot.store.close()
         self.bot.store = Store(Path(self.tmp.name) / 'db.sqlite3')
         self.assertEqual(self.bot.store.settings(11)['role_ids'], [31,32])
-        await DropBot.notify_available(self.bot, {'guild_id':11,'name':'Drop'})
+        await DropBot.notify_status(self.bot, {'guild_id':11,'name':'Drop'})
         args = channel.send.call_args
         self.assertIn('<@&31> <@&32>', args.args[0])
         self.assertEqual(args.kwargs['allowed_mentions'].roles, roles)
         self.assertFalse(args.kwargs['allowed_mentions'].everyone)
+        await DropBot.notify_status(self.bot, {'guild_id':11,'name':'Drop'}, taken_by=10)
+        args = channel.send.call_args
+        self.assertIn('<@&31> <@&32>', args.args[0])
+        self.assertIn('est pris par <@10>', args.args[0])
+        self.assertEqual(args.kwargs['allowed_mentions'].roles, roles)
+        self.assertFalse(args.kwargs['allowed_mentions'].users)
+
         for bad in (['31','999'], ['31'] * 26, '31'):
             response = await self.client.post('/api/settings', json={'channel_id':'22','role_ids':bad}, headers=headers)
             self.assertEqual(response.status, 400)
